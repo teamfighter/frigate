@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  frigate:
+    container_name: frigate
+    privileged: true                    # ← проще дать контейнеру весь /dev, чем перечислять /dev/nvidia*
+    restart: unless-stopped
+    image: blakeblackshear/frigate:0.15.0-tensorrt  # ← нужная сборка с TensorRT под NVIDIA
+    deploy:
+      resources:
+        reservations:
+          devices:                      # ← “новый” способ подключить GPU (Compose v3 + nvidia-container-runtime)
+            - driver: nvidia
+              count: 1                  # ← берём единственную RTX 3050
+              capabilities: [gpu]
+
+    shm_size: "2048mb"                  # ← увеличиваем /dev/shm, иначе Frigate будет ворчать
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128  # ← останется, если в хосте ещё есть iGPU; иначе убрать
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config:/config
+      - ./storage:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache              # ← храним временные JPEG/embeddings в RAM → экономим SSD
+        tmpfs:
+          size: 1000000000              #   1 GB хватит 4–6 камерам 1080p
+    ports:
+      - "8971:8971"                     # ← новый веб-UI Frigate 0.15
+      - "5000:5000"                     # ← REST API + старый UI (по желанию)
+      - "8554:8554"                     # ← RTSP restream от go2rtc
+      - "8555:8555/tcp"                 # ← WebRTC сигнализация
+      - "8555:8555/udp"                 # ← WebRTC медиа-канал
+    environment:
+      FRIGATE_RTSP_PASSWORD: "PASSWORD" # ← чтобы не писать пароль в каждом URL
+      YOLO_MODELS: "yolov7-640"         # ← Frigate подтянет и закэширует модель .onnx
+
+  ollama:
+    container_name: ollama
+    restart: unless-stopped
+    image: ollama/ollama
+    healthcheck:
+      test: ollama --version || exit 1  # ← простой чек, что CLI отвечает
+    entrypoint: /root/entrypoint.sh     # ← твой скрипт автоподтяжки моделей
+    volumes:
+      - ./ollama/volume:/root/.ollama   # ← сюда Ollama кладёт модели (сохранятся между рестартами)
+      - ./ollama/entrypoint.sh:/root/entrypoint.sh
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "11434:11434"                   # ← API Ollama, Frigate будет стучаться сюда
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"          # ← не даём LLaVA жрать VRAM параллельными запросами
+      OLLAMA_MAX_QUEUE: "256"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

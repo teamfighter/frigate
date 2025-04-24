@@ -1,0 +1,93 @@
+model:
+  path: /config/model_cache/tensorrt/yolov7-640.trt  # ← готовый движок TensorRT
+  input_tensor: nchw
+  input_pixel_format: rgb
+  width: 640
+  height: 640
+
+semantic_search:
+  enabled: true          # ← CLIP-embedding для «поиска по картинке/тексту»
+  model_size: large      #   large требует +VRAM; можно small, если упираемся в 8 ГБ
+  reindex: false         #   true = прогонит всё старое видео (долго)
+
+genai:
+  enabled: true
+  provider: ollama
+  base_url: http://ollama:11434        # ← имя сервиса внутри docker-сети
+  model: llava                         # ← в entrypoint подтяни llava 13b или 7b
+  prompt: >-
+    Analyze the {label} in these images from the {camera} security camera...
+  object_prompts:                      # ← кастомные подсказки на каждый класс
+    person: Examine the main person in these images...
+    car: Observe the primary vehicle in these images...
+    dog: Describe the animal that you see on these images...
+    # и т. д. для cat, motorcycle, bicycle
+
+detectors:
+  tensorrt:            # ← имя детектора (ссылаемся на него ниже)
+    type: tensorrt
+    device: 0          # ← индекс GPU (у нас единственный)
+
+detect:
+  enabled: true
+  width: 1920          # ← фактическое разрешение DETECT-потока!
+  height: 1080
+  stationary:
+    interval: 50
+    threshold: 50
+
+motion:
+  threshold: 40
+  contour_area: 25
+  improve_contrast: true
+  lightning_threshold: 0.8
+
+birdseye:
+  enabled: true
+  mode: motion         # ← режим «мозаика» по событиям движения
+
+ffmpeg:
+  hwaccel_args: preset-nvidia-h264     # ← NVDEC + zero-copy → быстро и без CPU
+  output_args:
+    record: -f segment -segment_time 10 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c:v copy -c:a aac
+
+record:
+  enabled: true
+  retain:
+    days: 30
+    mode: motion
+  sync_recordings: true
+  alerts:
+    retain:
+      days: 90
+  detections:
+    retain:
+      days: 90
+
+objects:
+  track:
+    - person
+    - car
+    - motorcycle
+    - bird
+    - cat
+    - dog
+
+go2rtc:
+  streams:
+    Backyard:
+      - rtsp://login:password@192.168.99.37:554/stream1
+      - ffmpeg:Backyard#video=h264#hardware
+
+cameras:
+  Backyard:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://tapocamera:tapocamera@192.168.99.37:554/stream1
+          input_args: preset-rtsp-generic
+          roles: [detect]
+    motion:
+      mask:            # ← полигоны, где движение игнорируем
+        - 0.002,0.042,0.32,0.045,0.321,0.004,0.001,0.002
+        # … (остальные координаты урезал для краткости)
